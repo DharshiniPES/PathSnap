@@ -4,4 +4,6 @@ __pycache__/
 *.log
 .DS_Store
 *.zip
-data/Student folder/train/
+.ipynb_checkpoints/
+data/
+

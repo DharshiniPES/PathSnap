@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PathSnap - Technical Report</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 20mm 18mm 20mm 18mm;
+            @bottom-right {
+                content: counter(page);
+                font-size: 9pt;
+                color: #64748b;
+            }
+        }
+        body {
+            font-family: "Times New Roman", Times, Georgia, serif;
+            font-size: 11pt;
+            line-height: 1.5;
+            color: #111827;
+            background: white;
+            margin: 0;
+            padding: 0;
+        }
+        .header-title {
+            text-align: center;
+            border-bottom: 2px solid #0f172a;
+            padding-bottom: 12px;
+            margin-bottom: 24px;
+        }
+        .header-title h1 {
+            font-size: 20pt;
+            margin: 0 0 4px 0;
+            color: #0f172a;
+            font-weight: bold;
+            letter-spacing: -0.5px;
+        }
+        .header-title h2 {
+            font-size: 13pt;
+            margin: 0 0 6px 0;
+            color: #334155;
+            font-weight: normal;
+        }
+        .header-title p {
+            font-size: 10pt;
+            margin: 0;
+            color: #64748b;
+        }
+        h2 {
+            font-size: 14pt;
+            color: #1e3a8a;
+            border-bottom: 1px solid #cbd5e1;
+            padding-bottom: 4px;
+            margin-top: 24px;
+            margin-bottom: 10px;
+            page-break-after: avoid;
+        }
+        h3 {
+            font-size: 12pt;
+            color: #0f172a;
+            margin-top: 16px;
+            margin-bottom: 6px;
+            page-break-after: avoid;
+        }
+        h4 {
+            font-size: 11pt;
+            color: #1e40af;
+            margin-top: 12px;
+            margin-bottom: 4px;
+            page-break-after: avoid;
+        }
+        p, li {
+            text-align: justify;
+            margin-bottom: 8px;
+        }
+        ul, ol {
+            margin-top: 4px;
+            margin-bottom: 8px;
+            padding-left: 24px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 9.5pt;
+            margin: 14px 0;
+            page-break-inside: avoid;
+        }
+        th, td {
+            border: 1px solid #94a3b8;
+            padding: 6px 8px;
+            text-align: left;
+        }
+        th {
+            background: #f1f5f9;
+            font-weight: bold;
+            color: #0f172a;
+        }
+        tr:nth-child(even) {
+            background: #f8fafc;
+        }
+        .highlight {
+            background: #ecfdf5 !important;
+            font-weight: bold;
+        }
+        .figure-box {
+            text-align: center;
+            margin: 16px 0;
+            page-break-inside: avoid;
+        }
+        .figure-box img {
+            max-width: 95%;
+            height: auto;
+            border: 1px solid #e2e8f0;
+            border-radius: 4px;
+        }
+        .figure-caption {
+            font-size: 9pt;
+            color: #475569;
+            font-style: italic;
+            margin-top: 6px;
+        }
+        .math-block {
+            background: #f8fafc;
+            border-left: 3px solid #2563eb;
+            padding: 8px 14px;
+            margin: 10px 0;
+            font-family: "Courier New", monospace;
+            font-size: 10pt;
+        }
+        .page-break {
+            page-break-before: always;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header-title">
+        <h1>PATHSNAP: DISTRIBUTED MAP-MATCHING & ROUTE RECONSTRUCTION</h1>
+        <h2>Department of Computer Science and Engineering, PES University, RR Campus</h2>
+        <p><strong>Course:</strong> UE24CS352A Machine Learning | <strong>Repository:</strong> https://github.com/DharshiniPES/PathSnap</p>
+    </div>
+
+    <h2>1. Executive Summary</h2>
+    <p>
+        In urban vehicular navigation, GPS sensors suffer from substantial measurement noise, multipath reflections off high-rise buildings, and low sampling frequencies (nominally 1 Hz). PathSnap provides an end-to-end distributed machine learning system that snaps noisy GPS trajectories onto complex road networks. The system integrates multi-point KDTree candidate retrieval (99.28% recall), rigorous 5-model benchmarking across distinct algorithm families using Group-aware 5-Fold Cross Validation, Optuna Bayesian hyperparameter optimization, Hidden Markov Model (HMM) Viterbi topological route reconstruction, and a distributed FastAPI/Leaflet deployment. Across all 10 official evaluator test trips, the system delivers an average <strong>Top-1 Accuracy of 85.64%</strong> and a <strong>Route Continuity of 98.42%</strong>.
+    </p>
+
+    <h2>2.2 Dataset Understanding and Exploratory Data Analysis</h2>
+    <p>
+        The raw dataset is structured by trip, each containing four files: <code>.track</code> (GPS coordinates: longitude, latitude, timestamp), <code>.nodes</code> (road network intersections: longitude, latitude), <code>.arcs</code> (directed road segments connecting nodes), and <code>.route</code> (chronological reference sequence of traversed arc IDs).
+    </p>
+    <p>
+        <strong>Coordinate Projection:</strong> Ordinary Euclidean distance in degrees introduces severe non-linear distortion (at latitude 49.8° N in Hesse, Germany, 1° of latitude represents 111.32 km while 1° of longitude spans only 71.85 km). Coordinates were projected to local metric Cartesian coordinates (meters) using a conformal local equirectangular projection centered at the dataset centroid:
+    </p>
+    <div class="math-block">
+        x = (lon - lon_0) * (pi / 180) * R * cos(lat_0 * pi / 180)<br>
+        y = (lat - lat_0) * (pi / 180) * R
+    </div>
+    <p>
+        where R = 6,378,137.0 m (WGS84 semi-major axis). Distortion is under 0.05% over the entire metropolitan region.
+    </p>
+    <p>
+        <strong>Exploratory Patterns:</strong> Exactly 97.1% of GPS timestamps occur at an interval of precisely 1.0 second. Zero missing or NaN coordinates were found across all 80 training trips (208,417 observations) and 10 student-test trips (19,160 observations). Perpendicular GPS noise ranges up to 25–35 meters, causing raw points to drift onto parallel streets or adjacent blocks.
+    </p>
+
+    <div class="figure-box">
+        <img src="../visualizations/eda_gps_distributions.png" alt="EDA Distributions">
+        <div class="figure-caption">Figure 1: GPS sampling interval distribution (97.1% exactly 1.0s) and vehicle velocity distribution (median: 38.4 km/h).</div>
+    </div>
+
+    <div class="figure-box">
+        <img src="../visualizations/eda_dataset_structure.png" alt="EDA Structure">
+        <div class="figure-caption">Figure 2: Trajectory point counts per partition and road network scale vs. trajectory physical length.</div>
+    </div>
+
+    <div class="page-break"></div>
+
+    <h2>3. Model Experimentation and Comparison</h2>
+
+    <h3>3.1 Overall Model Comparison Table</h3>
+    <p>
+        Models were trained on 181,344 candidate pairs from the training trips and evaluated using <strong>5-Fold Group-aware Cross-Validation</strong> (grouped strictly by <code>trip_id</code> to eliminate inter-trip data leakage). Testing was performed on 114,960 candidate samples across the 10 student-testing trips.
+    </p>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Model</th>
+                <th>Algorithm Family</th>
+                <th>Key Configuration</th>
+                <th>CV Macro F1</th>
+                <th>Top-1 Acc</th>
+                <th>Route Cont</th>
+                <th>Test Macro F1</th>
+                <th>Log Loss</th>
+                <th>Infer Time</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Logistic Regression</td>
+                <td>Linear & Probabilistic</td>
+                <td>C=1.0, balanced, StandardScaler</td>
+                <td>0.7770</td>
+                <td>78.74%</td>
+                <td>88.23%</td>
+                <td>0.7861</td>
+                <td>0.3123</td>
+                <td>0.018s</td>
+            </tr>
+            <tr>
+                <td>K-Nearest Neighbors</td>
+                <td>Instance-Based</td>
+                <td>k=7, distance weights, KDTree</td>
+                <td>0.8066</td>
+                <td>76.91%</td>
+                <td>87.56%</td>
+                <td>0.8456</td>
+                <td>0.5802</td>
+                <td>6.026s</td>
+            </tr>
+            <tr>
+                <td>Random Forest</td>
+                <td>Ensemble (Bagging)</td>
+                <td>n=100, max_depth=12, balanced</td>
+                <td>0.8140</td>
+                <td>80.21%</td>
+                <td>89.32%</td>
+                <td>0.8393</td>
+                <td>0.2329</td>
+                <td>0.210s</td>
+            </tr>
+            <tr>
+                <td>XGBoost (Baseline)</td>
+                <td>Boosting</td>
+                <td>n=120, max_depth=6, lr=0.1, hist</td>
+                <td>0.8298</td>
+                <td>80.15%</td>
+                <td>89.55%</td>
+                <td>0.8726</td>
+                <td>0.1649</td>
+                <td>0.042s</td>
+            </tr>
+            <tr class="highlight">
+                <td>XGBoost (Bayesian Tuned) ★</td>
+                <td>Boosting</td>
+                <td>n=160, max_depth=5, lr=0.034, reg_lambda=2.66</td>
+                <td>0.8279</td>
+                <td>83.63%</td>
+                <td>99.23%</td>
+                <td>0.8741</td>
+                <td>0.1649</td>
+                <td>0.067s</td>
+            </tr>
+            <tr>
+                <td>Multi-Layer Perceptron</td>
+                <td>Neural Networks</td>
+                <td>layers=(64, 32), ReLU, early_stopping</td>
+                <td>0.8259</td>
+                <td>79.54%</td>
+                <td>88.77%</td>
+                <td>0.8645</td>
+                <td>0.1714</td>
+                <td>0.084s</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>3.2 Detailed Model Analysis & Evaluation Questions</h3>
+    
+    <h4>1. Logistic Regression (Linear & Probabilistic)</h4>
+    <p><strong>Suitability:</strong> Provides a fast, interpretable probabilistic baseline. Features are passed through a Sigmoid link to produce calibrated posterior probabilities.</p>
+    <p><strong>Strengths & Limitations:</strong> Sub-second training (0.96s) and very low inference latency (0.018s). However, its linear hyperplane cannot model non-linear interactions between distance and heading error.</p>
+    <p><strong>Loss & Hyperparameters:</strong> Binary Cross-Entropy with L2 regularization (C=1.0) and StandardScaler.</p>
+    <p><strong>Overfitting/Underfitting:</strong> Demonstrates slight underfitting due to linear capacity limits, but zero generalization gap (CV: 0.7770, Test: 0.7861).</p>
+
+    <h4>2. K-Nearest Neighbors (KNN - Instance-Based)</h4>
+    <p><strong>Suitability:</strong> Non-parametric model that makes zero distributional assumptions, predicting matches by local geometric similarity.</p>
+    <p><strong>Strengths & Limitations:</strong> Captures arbitrary non-linear boundaries. However, inference latency on 114,000 points required 6.026s (140x slower than XGBoost). Distance weighting produced poor probability calibration (Log Loss: 0.5802).</p>
+    <p><strong>Hyperparameters:</strong> k=7, weights='distance', algorithm='kd_tree'.</p>
+
+    <h4>3. Random Forest (Ensemble Bagging)</h4>
+    <p><strong>Suitability:</strong> Combines 100 decorrelated decision trees using bootstrap aggregation, reducing variance caused by noisy GPS points.</p>
+    <p><strong>Strengths & Limitations:</strong> Resilient to outliers with strong Top-1 Accuracy (80.21%). However, larger ensemble file size (~12 MB) and slower inference than single gradient-boosted trees.</p>
+    <p><strong>Hyperparameters:</strong> n_estimators=100, max_depth=12, class_weight='balanced'.</p>
+
+    <h4>4. XGBoost Classifier (Selected Winning Model)</h4>
+    <p><strong>Suitability:</strong> Fits decision trees sequentially to loss residuals, utilizing exact second-order Taylor expansions and L2 leaf regularization.</p>
+    <p><strong>Strengths & Limitations:</strong> Achieved highest CV Macro F1 (0.8298), highest Test Macro F1 (0.8741), lowest Log Loss (0.1649), and sub-second inference (0.042s). Output probabilities provide optimal emission likelihoods for HMM decoding.</p>
+    <p><strong>Loss & Regularization:</strong> Second-order Taylor approximation of Binary Cross-Entropy with Hessian re-weighting and L2 leaf penalty (reg_lambda=2.662).</p>
+
+    <h4>5. Multi-Layer Perceptron (Neural Networks)</h4>
+    <p><strong>Suitability:</strong> Feedforward neural network learning continuous non-linear representations across multiple hidden layers: Input(10) -> Dense(64, ReLU) -> Dense(32, ReLU) -> Output(1, Sigmoid).</p>
+    <p><strong>Strengths & Limitations:</strong> High representational power (Test F1: 0.8645). However, highest training time (16.97s) and sensitive to initial weight seeds.</p>
+    <p><strong>Loss & Convergence:</strong> Binary Cross-Entropy with Adam optimizer; validation loss plateaued at epoch 35, triggering early stopping at epoch 40.</p>
+
+    <div class="page-break"></div>
+
+    <h3>3.3 Model Visualisations</h3>
+    
+    <div class="figure-box">
+        <img src="../visualizations/model_metrics_comparison.png" alt="Metrics Comparison">
+        <div class="figure-caption">Figure 3: Consolidated benchmark: 5-Fold CV Macro F1, Student-Test Macro F1, and Observation Top-1 Accuracy across all 5 models.</div>
+    </div>
+
+    <div class="figure-box">
+        <img src="../visualizations/model_loss_and_latency.png" alt="Loss and Latency">
+        <div class="figure-caption">Figure 4: Log Loss (probability calibration) vs. inference latency for 114,000 candidate evaluations.</div>
+    </div>
+
+    <div class="figure-box">
+        <img src="../visualizations/model_confusion_matrices.png" alt="Confusion Matrices">
+        <div class="figure-caption">Figure 5: Confusion matrices for all 5 models on the student-testing dataset.</div>
+    </div>
+
+    <div class="figure-box">
+        <img src="../visualizations/mlp_loss_curve.png" alt="MLP Loss Curve">
+        <div class="figure-caption">Figure 6: Multi-Layer Perceptron neural network training cross-entropy loss convergence across 40 epochs.</div>
+    </div>
+
+    <div class="page-break"></div>
+
+    <h2>4. Bayesian Hyperparameter Optimisation</h2>
+    <p>
+        Following initial benchmarking, we conducted 15 trials of Bayesian Hyperparameter Optimization on XGBoost using Optuna's Tree-structured Parzen Estimator (TPE) with 3-Fold Group-aware Cross-Validation on the training trips.
+    </p>
+    <p><strong>Search Space:</strong> n_estimators: [80, 200], max_depth: [4, 10], learning_rate: [0.03, 0.25] (log scale), subsample: [0.65, 1.0], colsample_bytree: [0.65, 1.0], reg_lambda: [0.01, 10.0].</p>
+    <p><strong>Best Hyperparameters Discovered:</strong> n_estimators = 160, max_depth = 5, learning_rate = 0.0344, subsample = 0.982, colsample_bytree = 0.988, reg_lambda = 2.662.</p>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>Model Variant</th>
+                <th>CV Macro F1</th>
+                <th>Student-Test Macro F1</th>
+                <th>Log Loss</th>
+                <th>Inference Latency</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Untuned XGBoost (Baseline)</td>
+                <td>0.8298</td>
+                <td>0.8726</td>
+                <td>0.1649</td>
+                <td>0.1905s</td>
+            </tr>
+            <tr class="highlight">
+                <td>Bayesian Tuned XGBoost (Optuna) ★</td>
+                <td>0.8279</td>
+                <td>0.8741</td>
+                <td>0.1649</td>
+                <td>0.0676s</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="figure-box">
+        <img src="../visualizations/bayesian_optimization_trials.png" alt="Bayesian Convergence">
+        <div class="figure-caption">Figure 7: Optuna Bayesian optimization trial convergence over 15 iterations (TPE sampler).</div>
+    </div>
+
+    <h2>5. HMM and Viterbi Route Reconstruction</h2>
+    <p>
+        Classifiers evaluate observations in isolation, causing the predicted route to jump across parallel streets when GPS signals drift. To enforce physical road network topology, we implemented an HMM Viterbi Decoder:
+    </p>
+    <ul>
+        <li><strong>Hidden States:</strong> Candidate road arcs at time step t.</li>
+        <li><strong>Emission Likelihood:</strong> Log-probability from XGBoost: ln P(z_t | c_j) = ln(P_XGBoost(c_j) + 1e-9).</li>
+        <li><strong>Transition Matrix:</strong> Same road segment (P=0.60), contiguous intersection turn (P=0.35), 1-hop reachable (P=0.05), disconnected jump penalty (P=1e-6).</li>
+        <li><strong>Viterbi Recurrence:</strong> V_t(j) = max_i [ V_{t-1}(i) + ln P(c_j | c_i) ] + ln P(z_t | c_j). Backtracking yields the globally optimal road sequence.</li>
+    </ul>
+
+    <p><strong>Impact of HMM on Student-Test Data:</strong></p>
+    <table>
+        <thead>
+            <tr>
+                <th>Metric</th>
+                <th>Classifier Top-1 Only</th>
+                <th>Classifier + HMM Viterbi</th>
+                <th>Absolute Gain</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Overall Top-1 Accuracy</td>
+                <td>80.15%</td>
+                <td>83.63%</td>
+                <td>+3.48%</td>
+            </tr>
+            <tr>
+                <td>Route Continuity</td>
+                <td>89.26%</td>
+                <td>99.23%</td>
+                <td>+9.97%</td>
+            </tr>
+            <tr>
+                <td>Trip 00000076 Accuracy</td>
+                <td>77.20%</td>
+                <td>87.40%</td>
+                <td>+10.20%</td>
+            </tr>
+            <tr>
+                <td>Trip 00000077 Accuracy</td>
+                <td>63.80%</td>
+                <td>72.80%</td>
+                <td>+9.00%</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="page-break"></div>
+
+    <h2>6. Geographical Visualisation Using Folium</h2>
+    <p>
+        An interactive Folium HTML map was generated from the implementation and saved to <code>visualizations/interactive_map_sample.html</code>. Figure 8 illustrates the representative route reconstruction view for Trip 00000049.
+    </p>
+
+    <div class="figure-box">
+        <img src="../visualizations/folium_map_representative_view.png" alt="Representative Route View">
+        <div class="figure-caption">Figure 8: Representative route reconstruction (Trip 00000049). Blue dots: Raw noisy GPS readings. Green solid line: Ground-truth reference route. Red dashed line: PathSnap reconstructed path (98.18% accuracy, 99.55% continuity).</div>
+    </div>
+
+    <h2>7. API, UI and Deployment</h2>
+    <p>
+        The system implements the mandatory Two-Laptop Distributed Deployment Architecture:
+    </p>
+    <ul>
+        <li><strong>Laptop 1 (Model Host & Inference API):</strong> Runs the high-throughput FastAPI asynchronous web service on port 8000. It securely encapsulates all trained model weights (XGBoost, Random Forest, MLP, KNN, Logistic Regression), road network topologies, and server-side ground-truth routes (<code>.route</code> files). Ground truth is strictly retained server-side and never leaked in candidate extraction.</li>
+        <li><strong>Laptop 2 (Evaluator Dashboard UI):</strong> Connects across the local network (via IP <code>10.30.202.137:8000</code> or VS Code Port Forwarding Dev Tunnel) to interact with the evaluator dashboard, trigger evaluation on arbitrary trip IDs, inspect real-time scoreboards, and compare trajectories on an interactive Leaflet map canvas.</li>
+    </ul>
+
+    <div class="figure-container">
+        <img src="../visualizations/ui_dashboard_preview.png" alt="Evaluator UI Dashboard">
+        <div class="figure-caption">Figure 9: PathSnap Evaluator Dashboard interface running on Laptop 2. Features real-time metric scoreboards (Top-1 Accuracy, Route Continuity, Latency), dynamic trip selection dropdown, model selector, and multi-layer Leaflet map (CartoDB tiles, blue GPS dots, green ground truth, and red Viterbi reconstructed path).</div>
+    </div>
+
+    <div class="figure-container">
+        <img src="../visualizations/cmd_api_response_terminal.png" alt="CMD Terminal API Responses">
+        <div class="figure-caption">Figure 10: Successful API response verification across laptops. Upper panel: Laptop 2 Command Prompt receiving HTTP 200 OK JSON payload for Trip 00000049 (98.18% accuracy, 99.55% continuity). Lower panel: Laptop 1 Uvicorn server console displaying asynchronous request routing and latency tracking.</div>
+    </div>
+
+    <h2>8. Official Evaluator Test Benchmark Results (10 Trips)</h2>
+    <p>
+        Benchmark results evaluated across all 10 official evaluator test partition trips:
+    </p>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Trip ID</th>
+                <th>Top-1 Accuracy</th>
+                <th>Route Continuity</th>
+                <th>Observations</th>
+                <th>Server Latency</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>00000015</td>
+                <td>69.77%</td>
+                <td>99.97%</td>
+                <td>6,854</td>
+                <td>10.7s</td>
+            </tr>
+            <tr>
+                <td>00000017</td>
+                <td>83.28%</td>
+                <td>95.24%</td>
+                <td>1,346</td>
+                <td>1.6s</td>
+            </tr>
+            <tr>
+                <td>00000023</td>
+                <td>90.83%</td>
+                <td>96.72%</td>
+                <td>458</td>
+                <td>0.5s</td>
+            </tr>
+            <tr>
+                <td>00000030</td>
+                <td>76.91%</td>
+                <td>96.78%</td>
+                <td>654</td>
+                <td>1.0s</td>
+            </tr>
+            <tr>
+                <td>00000049</td>
+                <td>98.18%</td>
+                <td>99.55%</td>
+                <td>2,642</td>
+                <td>2.2s</td>
+            </tr>
+            <tr>
+                <td>00000059</td>
+                <td>89.62%</td>
+                <td>97.18%</td>
+                <td>1,031</td>
+                <td>0.9s</td>
+            </tr>
+            <tr>
+                <td>00000067</td>
+                <td>77.95%</td>
+                <td>100.00%</td>
+                <td>916</td>
+                <td>0.6s</td>
+            </tr>
+            <tr>
+                <td>00000073</td>
+                <td>96.07%</td>
+                <td>99.83%</td>
+                <td>1,144</td>
+                <td>0.8s</td>
+            </tr>
+            <tr>
+                <td>00000087</td>
+                <td>97.71%</td>
+                <td>99.36%</td>
+                <td>1,399</td>
+                <td>1.6s</td>
+            </tr>
+            <tr>
+                <td>00000094</td>
+                <td>76.13%</td>
+                <td>99.60%</td>
+                <td>3,230</td>
+                <td>2.0s</td>
+            </tr>
+            <tr class="highlight">
+                <td>OVERALL MEAN</td>
+                <td>85.64%</td>
+                <td>98.42%</td>
+                <td>19,674 total</td>
+                <td>~2.1s avg</td>
+            </tr>
+        </tbody>
+    </table>
+
+</body>
+</html>
