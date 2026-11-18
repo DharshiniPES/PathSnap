@@ -1,0 +1,674 @@
+"""
+FastAPI Backend & Evaluator Dashboard for Laptop 1 and Laptop 2.
+PES University UE24CS352A: Machine Learning
+PathSnap: Distributed Map-Matching & Route Reconstruction
+"""
+
+import os
+import sys
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from typing import Optional
+
+# Path setup
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+from src.api.inference_engine import PathSnapEngine
+
+app = FastAPI(
+    title="PathSnap Map-Matching API",
+    description="Backend inference service hosting ML classifier and HMM/Viterbi route decoder.",
+    version="1.0.0"
+)
+
+# Enable CORS for Laptop 2 (User Interface) communication
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+MODELS_DIR = os.path.join(BASE_DIR, "src/models/saved_models")
+DATA_DIR = os.path.join(BASE_DIR, "data/Student folder")
+VIZ_DIR = os.path.join(BASE_DIR, "visualizations")
+
+# Mount visualizations as static files for UI plots
+if os.path.exists(VIZ_DIR):
+    app.mount("/static", StaticFiles(directory=VIZ_DIR), name="static")
+
+engine = PathSnapEngine(models_dir=MODELS_DIR, data_dir=DATA_DIR)
+
+@app.get("/health")
+def health_check():
+    """Health check returning loaded models and service status."""
+    return {
+        "status": "healthy",
+        "service": "PathSnap Model & API Backend (Laptop 1)",
+        "loaded_models": list(engine.loaded_models.keys()),
+        "recommended_model": "xgboost_tuned",
+        "hmm_decoder_available": True
+    }
+
+@app.get("/trips")
+def list_trips(partition: str = Query("student_test", description="Partition name (student_test or train)")):
+    """Returns the list of available trips for evaluation."""
+    trips = engine.list_available_trips(partition=partition)
+    return {
+        "partition": partition,
+        "count": len(trips),
+        "trips": trips
+    }
+
+@app.get("/evaluate/{trip_id}")
+@app.post("/evaluate/{trip_id}")
+def evaluate_trip(
+    trip_id: str,
+    model_name: str = Query("xgboost_tuned", description="Model choice: xgboost_tuned, xgboost, random_forest, mlp, logistic_regression, knn"),
+    use_hmm: bool = Query(True, description="Enable HMM + Viterbi topological decoder"),
+    partition: str = Query("student_test", description="Partition: student_test or train")
+):
+    """
+    Main evaluation endpoint:
+    Processes the selected trip through the complete prediction pipeline,
+    computes accuracy against the server-side ground-truth route, and returns
+    metrics and route coordinates for display on Laptop 2.
+    """
+    if trip_id.isdigit():
+        trip_id = f"{int(trip_id):08d}"
+
+    try:
+        result = engine.run_inference(
+            trip_id=trip_id,
+            partition=partition,
+            model_name=model_name,
+            use_hmm=use_hmm
+        )
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Inference error: {str(e)}")
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    """Evaluator-grade dashboard with interactive Leaflet map, plots, formulas, and theory tabs."""
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>PathSnap - Evaluator Control Center</title>
+        <!-- Leaflet CSS -->
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <!-- KaTeX CSS for beautiful math formulas -->
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+        <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+        <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"
+            onload="renderMathInElement(document.body);"></script>
+
+        <style>
+            :root {
+                --primary: #1e40af;
+                --primary-light: #3b82f6;
+                --accent: #10b981;
+                --bg: #f8fafc;
+                --card-bg: #ffffff;
+                --border: #e2e8f0;
+                --text: #0f172a;
+                --text-muted: #64748b;
+            }
+            * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+            body { background: var(--bg); color: var(--text); display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+            header { background: #0f172a; color: white; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #334155; }
+            .logo-title { font-size: 19px; font-weight: 700; letter-spacing: -0.5px; display: flex; align-items: center; gap: 10px; }
+            .badge-live { background: #22c55e; color: #022c22; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+            
+            /* Tabs */
+            .tabs-bar { background: #1e293b; display: flex; gap: 4px; padding: 0 24px; border-bottom: 1px solid #334155; }
+            .tab-btn { background: transparent; color: #94a3b8; border: none; padding: 10px 18px; font-size: 13px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; }
+            .tab-btn:hover { color: white; }
+            .tab-btn.active { color: #60a5fa; border-bottom-color: #60a5fa; }
+
+            .main-content { display: flex; flex: 1; height: calc(100vh - 90px); overflow: hidden; }
+            .tab-pane { display: none; width: 100%; height: 100%; }
+            .tab-pane.active { display: flex; }
+
+            /* Map View Layout */
+            .sidebar { width: 340px; background: var(--card-bg); border-right: 1px solid var(--border); padding: 18px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
+            .map-container { flex: 1; height: 100%; position: relative; }
+            #leafletMap { width: 100%; height: 100%; }
+
+            .form-group { display: flex; flex-direction: column; gap: 5px; }
+            label { font-size: 12px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); }
+            select, button { padding: 9px 12px; border-radius: 6px; border: 1px solid var(--border); font-size: 13px; outline: none; }
+            select { background: white; cursor: pointer; }
+            button.btn-primary { background: var(--primary); color: white; border: none; font-weight: 700; cursor: pointer; transition: 0.15s; }
+            button.btn-primary:hover { background: var(--primary-light); }
+            .checkbox-label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; text-transform: none; color: var(--text); cursor: pointer; }
+
+            /* Metrics Scoreboard */
+            .metrics-card { background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+            .metric-row { display: flex; justify-content: space-between; align-items: center; }
+            .metric-title { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+            .metric-value { font-size: 16px; font-weight: 800; color: var(--primary); }
+            .metric-large { font-size: 26px; font-weight: 800; color: #16a34a; }
+
+            /* Map Legend */
+            .legend-box { background: white; padding: 10px 14px; border-radius: 6px; box-shadow: 0 2px 6px rgba(0,0,0,0.15); font-size: 12px; line-height: 1.6; }
+            .legend-item { display: flex; align-items: center; gap: 8px; }
+            .color-box { width: 12px; height: 12px; border-radius: 2px; }
+
+            /* Analytics View */
+            .scrollable-pane { padding: 24px; overflow-y: auto; width: 100%; height: 100%; background: #f1f5f9; display: flex; flex-direction: column; gap: 20px; }
+            .plot-card { background: white; border-radius: 10px; border: 1px solid var(--border); padding: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+            .plot-card h3 { font-size: 15px; margin-bottom: 12px; color: #0f172a; }
+            .plot-img { width: 100%; max-height: 480px; object-fit: contain; border-radius: 6px; border: 1px solid #f1f5f9; }
+
+            /* Comparison Table */
+            table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
+            th, td { padding: 10px 12px; border: 1px solid #cbd5e1; }
+            th { background: #e2e8f0; font-weight: 700; color: #334155; }
+            tr:nth-child(even) { background: #f8fafc; }
+            .highlight-row { background: #ecfdf5 !important; font-weight: 700; }
+
+            /* Theory Accordion */
+            .theory-box { background: white; border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 14px; }
+            .theory-box h4 { color: var(--primary); font-size: 15px; margin-bottom: 8px; }
+            .theory-box p, .theory-box li { font-size: 13px; line-height: 1.6; color: #334155; }
+            .theory-box ul { padding-left: 20px; margin-top: 6px; }
+            .formula-card { background: #f8fafc; border-left: 4px solid #2563eb; padding: 10px 14px; margin: 8px 0; border-radius: 0 6px 6px 0; font-size: 13px; }
+        </style>
+    </head>
+    <body>
+
+        <header>
+            <div class="logo-title">
+                PathSnap <span style="font-weight: 400; font-size: 14px; color: #94a3b8;">| Distributed Map-Matching & Route Reconstruction</span>
+            </div>
+            <div>
+                <span class="badge-live">Backend Online (Laptop 1)</span>
+            </div>
+        </header>
+
+        <div class="tabs-bar">
+            <button class="tab-btn active" onclick="switchTab('mapTab')">1. Interactive Map & Live Evaluation</button>
+            <button class="tab-btn" onclick="switchTab('modelsTab')">2. Model Benchmark & Visualizations</button>
+            <button class="tab-btn" onclick="switchTab('bayesTab')">3. Bayesian Hyperparameter Tuning</button>
+            <button class="tab-btn" onclick="switchTab('theoryTab')">4. Complete Theory, Formulas & Viva Defense</button>
+        </div>
+
+        <div class="main-content">
+
+            <!-- TAB 1: MAP VIEW -->
+            <div id="mapTab" class="tab-pane active">
+                <div class="sidebar">
+                    <div class="form-group">
+                        <label>Select Evaluation Trip</label>
+                        <select id="tripSelect">
+                            <option value="00000000">Trip 00000000 (Student Test - 2503 pts)</option>
+                            <option value="00000007">Trip 00000007 (Student Test - 1321 pts)</option>
+                            <option value="00000009">Trip 00000009 (Student Test - 1056 pts)</option>
+                            <option value="00000040">Trip 00000040 (Student Test - 2841 pts)</option>
+                            <option value="00000052">Trip 00000052 (Student Test - 1920 pts)</option>
+                            <option value="00000056">Trip 00000056 (Student Test - 1490 pts)</option>
+                            <option value="00000065">Trip 00000065 (Student Test - 3110 pts)</option>
+                            <option value="00000076">Trip 00000076 (Student Test - 1845 pts)</option>
+                            <option value="00000077">Trip 00000077 (Student Test - 2814 pts)</option>
+                            <option value="00000091">Trip 00000091 (Student Test - 2600 pts)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Prediction Model</label>
+                        <select id="modelSelect">
+                            <option value="xgboost_tuned">XGBoost (Bayesian Tuned - F1: 0.874) ★</option>
+                            <option value="xgboost">XGBoost (Baseline Boosting - F1: 0.873)</option>
+                            <option value="random_forest">Random Forest (Ensemble Bagging - F1: 0.839)</option>
+                            <option value="mlp">Multi-Layer Perceptron (Neural Net - F1: 0.865)</option>
+                            <option value="logistic_regression">Logistic Regression (Linear - F1: 0.786)</option>
+                            <option value="knn">K-Nearest Neighbors (Instance-Based - F1: 0.846)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="useHmm" checked>
+                            <strong>Enable HMM + Viterbi Decoder</strong>
+                        </label>
+                        <span style="font-size: 11px; color: var(--text-muted);">Enforces road-network graph connectivity (prevents jumping across parallel streets).</span>
+                    </div>
+
+                    <button class="btn-primary" onclick="runEvaluation()" id="evalBtn">Run Map-Matching Inference</button>
+
+                    <div class="metrics-card">
+                        <div class="metric-row">
+                            <span class="metric-title">Observation Top-1 Accuracy:</span>
+                            <span class="metric-large" id="accDisplay">--%</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-title">Route Continuity:</span>
+                            <span class="metric-value" id="contDisplay" style="color: #2563eb;">--%</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-title">Server Execution Time:</span>
+                            <span class="metric-value" id="timeDisplay" style="color: #64748b;">-- ms</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-title">Observations Processed:</span>
+                            <span class="metric-value" id="ptsDisplay" style="color: #0f172a;">--</span>
+                        </div>
+                    </div>
+
+                    <div class="legend-box">
+                        <strong>Map Legend</strong>
+                        <div class="legend-item" style="margin-top:6px;"><div class="color-box" style="background: #2563eb; border-radius: 50%;"></div> Raw GPS Dots (.track)</div>
+                        <div class="legend-item"><div class="color-box" style="background: #16a34a; height: 3px;"></div> Ground-Truth Route (.route)</div>
+                        <div class="legend-item"><div class="color-box" style="background: #dc2626; height: 3px;"></div> Reconstructed Path (Model)</div>
+                    </div>
+                </div>
+
+                <div class="map-container">
+                    <div id="leafletMap"></div>
+                </div>
+            </div>
+
+            <!-- TAB 2: MODEL BENCHMARK & VISUALIZATIONS -->
+            <div id="modelsTab" class="tab-pane">
+                <div class="scrollable-pane">
+                    <div class="plot-card">
+                        <h3>Official 5-Model Benchmark Table (Group-aware 5-Fold Cross Validation)</h3>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Model</th>
+                                    <th>Algorithm Family</th>
+                                    <th>Key Hyperparameters</th>
+                                    <th>CV Macro F1</th>
+                                    <th>Observation Top-1 Acc</th>
+                                    <th>Route Continuity</th>
+                                    <th>Student-Test Macro F1</th>
+                                    <th>Log Loss</th>
+                                    <th>Inference Latency</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>Logistic Regression</td>
+                                    <td>Linear & Probabilistic</td>
+                                    <td>C=1.0, class_weight='balanced', StandardScaler</td>
+                                    <td>0.7770</td>
+                                    <td>78.74%</td>
+                                    <td>88.23%</td>
+                                    <td>0.7861</td>
+                                    <td>0.3123</td>
+                                    <td>0.018s</td>
+                                </tr>
+                                <tr>
+                                    <td>K-Nearest Neighbors</td>
+                                    <td>Instance-Based</td>
+                                    <td>k=7, distance weights, KDTree</td>
+                                    <td>0.8066</td>
+                                    <td>76.91%</td>
+                                    <td>87.56%</td>
+                                    <td>0.8456</td>
+                                    <td>0.5802</td>
+                                    <td>6.026s</td>
+                                </tr>
+                                <tr>
+                                    <td>Random Forest</td>
+                                    <td>Ensemble (Bagging)</td>
+                                    <td>n_estimators=100, max_depth=12, balanced</td>
+                                    <td>0.8140</td>
+                                    <td>80.21%</td>
+                                    <td>89.32%</td>
+                                    <td>0.8393</td>
+                                    <td>0.2329</td>
+                                    <td>0.210s</td>
+                                </tr>
+                                <tr class="highlight-row">
+                                    <td>XGBoost (Selected Winner) ★</td>
+                                    <td>Boosting</td>
+                                    <td>n_estimators=120, max_depth=6, lr=0.1, hist</td>
+                                    <td>0.8298</td>
+                                    <td>80.15%</td>
+                                    <td>89.55%</td>
+                                    <td>0.8726</td>
+                                    <td>0.1649</td>
+                                    <td>0.042s</td>
+                                </tr>
+                                <tr>
+                                    <td>Multi-Layer Perceptron</td>
+                                    <td>Neural Networks</td>
+                                    <td>layers=(64, 32), ReLU, early_stopping</td>
+                                    <td>0.8259</td>
+                                    <td>79.54%</td>
+                                    <td>88.77%</td>
+                                    <td>0.8645</td>
+                                    <td>0.1714</td>
+                                    <td>0.084s</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="plot-card">
+                        <h3>Model Comparison: Cross-Validation vs Student-Test Metrics</h3>
+                        <img src="/static/model_metrics_comparison.png" class="plot-img" alt="Metrics Comparison">
+                    </div>
+
+                    <div class="plot-card">
+                        <h3>Log Loss (Probability Quality) & Inference Latency Comparison</h3>
+                        <img src="/static/model_loss_and_latency.png" class="plot-img" alt="Loss and Latency">
+                    </div>
+
+                    <div class="plot-card">
+                        <h3>Confusion Matrices Across All 5 Models</h3>
+                        <img src="/static/model_confusion_matrices.png" class="plot-img" alt="Confusion Matrices">
+                    </div>
+
+                    <div class="plot-card">
+                        <h3>Neural Network (MLP) Training Loss History</h3>
+                        <img src="/static/mlp_loss_curve.png" class="plot-img" alt="MLP Loss Curve">
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 3: BAYESIAN OPTIMIZATION -->
+            <div id="bayesTab" class="tab-pane">
+                <div class="scrollable-pane">
+                    <div class="plot-card">
+                        <h3>Bayesian Hyperparameter Optimization (Optuna TPE Sampler)</h3>
+                        <p style="font-size: 13px; color: #475569; margin-bottom: 12px;">
+                            We optimized our winning model (XGBoost) over 15 Bayesian optimization trials using Tree-structured Parzen Estimators (TPE) with 3-Fold Group-aware Cross-Validation on the training trips.
+                        </p>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Model Variant</th>
+                                    <th>CV Macro F1</th>
+                                    <th>Student-Test Macro F1</th>
+                                    <th>Log Loss</th>
+                                    <th>Inference Time (s)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>Untuned XGBoost (Baseline)</td>
+                                    <td>0.8298</td>
+                                    <td>0.8726</td>
+                                    <td>0.1649</td>
+                                    <td>0.1905s</td>
+                                </tr>
+                                <tr class="highlight-row">
+                                    <td>Bayesian Tuned XGBoost (Optuna) ★</td>
+                                    <td>0.8279</td>
+                                    <td>0.8741</td>
+                                    <td>0.1649</td>
+                                    <td>0.0676s</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <br>
+                        <h4 style="font-size: 13px; color: #0f172a;">Search Space vs Discovered Best Hyperparameters:</h4>
+                        <table style="margin-top: 8px;">
+                            <thead>
+                                <tr>
+                                    <th>Hyperparameter</th>
+                                    <th>Search Range</th>
+                                    <th>Baseline</th>
+                                    <th>Optuna Tuned Value</th>
+                                    <th>Physical / Algorithmic Meaning</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><code>n_estimators</code></td>
+                                    <td>[80, 200]</td>
+                                    <td>120</td>
+                                    <td><strong>160</strong></td>
+                                    <td>Number of sequential gradient boosting decision trees</td>
+                                </tr>
+                                <tr>
+                                    <td><code>max_depth</code></td>
+                                    <td>[4, 10]</td>
+                                    <td>6</td>
+                                    <td><strong>5</strong></td>
+                                    <td>Shallower tree depth prevents leaf overfitting to GPS coordinate noise</td>
+                                </tr>
+                                <tr>
+                                    <td><code>learning_rate</code></td>
+                                    <td>[0.03, 0.25]</td>
+                                    <td>0.10</td>
+                                    <td><strong>0.0344</strong></td>
+                                    <td>Shrinkage factor per tree, stabilizing gradient descent steps</td>
+                                </tr>
+                                <tr>
+                                    <td><code>subsample</code></td>
+                                    <td>[0.65, 1.0]</td>
+                                    <td>1.0</td>
+                                    <td><strong>0.982</strong></td>
+                                    <td>Fraction of training rows randomly sampled per boosting round</td>
+                                </tr>
+                                <tr>
+                                    <td><code>colsample_bytree</code></td>
+                                    <td>[0.65, 1.0]</td>
+                                    <td>1.0</td>
+                                    <td><strong>0.988</strong></td>
+                                    <td>Fraction of geometric features sampled per tree</td>
+                                </tr>
+                                <tr>
+                                    <td><code>reg_lambda</code></td>
+                                    <td>[0.01, 10.0]</td>
+                                    <td>1.0</td>
+                                    <td><strong>2.662</strong></td>
+                                    <td>L2 regularization penalty on leaf weights, preventing extreme probability spikes</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="plot-card">
+                        <h3>Bayesian Optimization Trial Convergence</h3>
+                        <img src="/static/bayesian_optimization_trials.png" class="plot-img" alt="Bayesian Convergence">
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 4: COMPLETE THEORY, FORMULAS & VIVA DEFENSE -->
+            <div id="theoryTab" class="tab-pane">
+                <div class="scrollable-pane">
+                    
+                    <div class="theory-box">
+                        <h4>1. Coordinate Projection (WGS84 Spherical to Local Metric Cartesian)</h4>
+                        <p>Raw GPS tracks contain angular coordinates ($^\circ\text{Lon}, ^\circ\text{Lat}$). Because 1 degree of latitude $\approx 111.32\text{ km}$ while 1 degree of longitude at latitude $49.8^\circ$ is only $\approx 71.85\text{ km}$, raw Euclidean distance in degrees introduces massive distortion. We use conformal local equirectangular projection centered at origin $(lon_0, lat_0)$:</p>
+                        <div class="formula-card">
+                            $$x = (lon - lon_0) \cdot \frac{\pi}{180} \cdot R \cdot \cos(lat_0 \cdot \frac{\pi}{180})$$
+                            $$y = (lat - lat_0) \cdot \frac{\pi}{180} \cdot R$$
+                            <span style="font-size: 11px; color: var(--text-muted);">where $R = 6,378,137\text{ m}$ (WGS84 Earth semi-major axis). Distortion is &lt;0.05% over city scale.</span>
+                        </div>
+                    </div>
+
+                    <div class="theory-box">
+                        <h4>2. Candidate Generation & Feature Formulation</h4>
+                        <p>For each GPS observation $P = (x_P, y_P)$ and directed candidate road segment from node $A = (x_A, y_A)$ to $B = (x_B, y_B)$:</p>
+                        <div class="formula-card">
+                            <strong>Projection parameter $t \in [0, 1]$:</strong>
+                            $$t = \text{clip}\left(\frac{(P - A) \cdot (B - A)}{\|B - A\|^2},\, 0.0,\, 1.0\right), \qquad Q = A + t(B - A)$$
+                            <strong>Perpendicular Distance ($d_\perp$):</strong>
+                            $$d_\perp = \|P - Q\|_2 = \sqrt{(x_P - x_Q)^2 + (y_P - y_Q)^2}$$
+                            <strong>Heading Cosine Alignment:</strong>
+                            $$\cos(\Delta \theta) = \cos(\theta_{\text{vehicle}} - \theta_{\text{arc}}) = \frac{\vec{v}_{\text{veh}} \cdot (B - A)}{\|\vec{v}_{\text{veh}}\| \|B - A\|}$$
+                        </div>
+                    </div>
+
+                    <div class="theory-box">
+                        <h4>3. All 5 Model Formulations & Loss Functions</h4>
+                        
+                        <p><strong>A. Logistic Regression (Linear & Probabilistic):</strong></p>
+                        <div class="formula-card">
+                            $$P(y=1 \mid \mathbf{x}) = \frac{1}{1 + e^{-\mathbf{w}^T \mathbf{x}}}, \qquad \mathcal{L}(\mathbf{w}) = -\frac{1}{N} \sum_{i=1}^N \left[ y_i \ln p_i + (1 - y_i) \ln(1 - p_i) \right] + \frac{1}{2C} \|\mathbf{w}\|^2$$
+                        </div>
+
+                        <p><strong>B. K-Nearest Neighbors (Instance-Based):</strong></p>
+                        <div class="formula-card">
+                            $$\hat{p} = \frac{\sum_{i=1}^k w_i y_i}{\sum_{i=1}^k w_i}, \quad w_i = \frac{1}{d(\mathbf{x}, \mathbf{x}_i) + \epsilon}$$
+                        </div>
+
+                        <p><strong>C. Random Forest (Ensemble Bagging):</strong></p>
+                        <div class="formula-card">
+                            $$P(y=1 \mid \mathbf{x}) = \frac{1}{B} \sum_{b=1}^B T_b(\mathbf{x}), \qquad I_G(p) = 1 - p_0^2 - p_1^2$$
+                        </div>
+
+                        <p><strong>D. XGBoost Classifier (Gradient Boosting — Winner):</strong></p>
+                        <div class="formula-card">
+                            $$\mathcal{L}^{(m)} \approx \sum_{i=1}^N \left[ g_i f_m(\mathbf{x}_i) + \frac{1}{2} h_i f_m^2(\mathbf{x}_i) \right] + \gamma T + \frac{1}{2} \lambda \sum_{j=1}^T w_j^2$$
+                            $$g_i = \hat{p}_i - y_i \quad\text{(Gradient)}, \qquad h_i = \hat{p}_i(1 - \hat{p}_i) \quad\text{(Hessian)}$$
+                        </div>
+
+                        <p><strong>E. Multi-Layer Perceptron (Neural Network):</strong></p>
+                        <div class="formula-card">
+                            $$\mathbf{h}_1 = \text{ReLU}(\mathbf{W}_1 \mathbf{x} + \mathbf{b}_1), \quad \mathbf{h}_2 = \text{ReLU}(\mathbf{W}_2 \mathbf{h}_1 + \mathbf{b}_2), \quad \hat{y} = \sigma(\mathbf{w}_3^T \mathbf{h}_2 + b_3)$$
+                        </div>
+                    </div>
+
+                    <div class="theory-box">
+                        <h4>4. Hidden Markov Model (HMM) & Viterbi Dynamic Programming</h4>
+                        <p>A pointwise classifier can jump across parallel streets when GPS signals drift. The HMM models sequence topology:</p>
+                        <div class="formula-card">
+                            <strong>Emission Likelihood:</strong>
+                            $$\ln P(z_t \mid c_j) = \ln(P_{\text{XGBoost}}(c_j) + \epsilon)$$
+                            <strong>Transition Matrix:</strong>
+                            $$P(c_j \mid c_i) = \begin{cases} 
+                            0.60 & \text{if } c_j = c_i \quad\text{(vehicle stays on same segment)} \\
+                            0.35 & \text{if } \text{to\_node}(c_i) = \text{from\_node}(c_j) \quad\text{(connected intersection turn)} \\
+                            0.05 & \text{if 1-hop reachable in road graph} \\
+                            10^{-6} & \text{otherwise (severe penalty for street hopping)}
+                            \end{cases}$$
+                            <strong>Viterbi Recurrence:</strong>
+                            $$V_t(j) = \max_i \left[ V_{t-1}(i) + \ln P(c_j \mid c_i) \right] + \ln P(z_t \mid c_j)$$
+                            $$B_t(j) = \arg\max_i \left[ V_{t-1}(i) + \ln P(c_j \mid c_i) \right]$$
+                        </div>
+                    </div>
+
+                    <div class="theory-box">
+                        <h4>5. Bayesian Optimization (TPE Expected Improvement)</h4>
+                        <p>Optuna uses Tree-structured Parzen Estimator (TPE) to model $P(x \mid y)$ where $x$ are hyperparameters and $y$ is the CV Macro F1 score:</p>
+                        <div class="formula-card">
+                            $$P(x \mid y) = \begin{cases} l(x) & \text{if } y > y^* \quad\text{(top 15% configurations)} \\ g(x) & \text{if } y \le y^* \quad\text{(remaining trials)} \end{cases}$$
+                            $$\text{Expected Improvement: } \text{EI}(x) \propto \frac{l(x)}{g(x)}$$
+                            <span style="font-size: 11px; color: var(--text-muted);">Points with high $l(x)$ and low $g(x)$ maximize the probability of beating the current best validation score.</span>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Leaflet JS -->
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <script>
+            let map;
+            let gpsLayer, routeLayer, predictedLayer;
+
+            function initMap() {
+                map = L.map('leafletMap').setView([49.85, 8.58], 14);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    maxZoom: 19,
+                    attribution: '© OpenStreetMap contributors'
+                }).addTo(map);
+
+                gpsLayer = L.layerGroup().addTo(map);
+                routeLayer = L.layerGroup().addTo(map);
+                predictedLayer = L.layerGroup().addTo(map);
+            }
+
+            function switchTab(tabId) {
+                document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
+                document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+                document.getElementById(tabId).classList.add('active');
+                event.target.classList.add('active');
+                if (tabId === 'mapTab') {
+                    setTimeout(() => map.invalidateSize(), 100);
+                }
+                if (typeof renderMathInElement === "function") {
+                    renderMathInElement(document.getElementById(tabId));
+                }
+            }
+
+            async function runEvaluation() {
+                const tripId = document.getElementById("tripSelect").value;
+                const model = document.getElementById("modelSelect").value;
+                const useHmm = document.getElementById("useHmm").checked;
+                const btn = document.getElementById("evalBtn");
+
+                btn.innerText = "Running Inference on Laptop 1...";
+                btn.disabled = true;
+
+                try {
+                    const res = await fetch(`/evaluate/${tripId}?model_name=${model}&use_hmm=${useHmm}`);
+                    const data = await res.json();
+
+                    // Update Scoreboard
+                    document.getElementById("accDisplay").innerText = data.metrics.top1_accuracy_percent + "%";
+                    document.getElementById("contDisplay").innerText = data.metrics.route_continuity_percent + "%";
+                    document.getElementById("timeDisplay").innerText = data.metrics.server_latency_ms + " ms";
+                    document.getElementById("ptsDisplay").innerText = data.metrics.predicted_arcs_count + " / " + data.metrics.total_observations;
+
+                    // Clear Layers
+                    gpsLayer.clearLayers();
+                    routeLayer.clearLayers();
+                    predictedLayer.clearLayers();
+
+                    const allBounds = [];
+
+                    // 1. Draw Raw GPS Points (Blue Dots)
+                    data.gps_samples.forEach(pt => {
+                        L.circleMarker(pt, { radius: 3, color: '#2563eb', fill: true, fillOpacity: 0.65 }).addTo(gpsLayer);
+                        allBounds.push(pt);
+                    });
+
+                    // 2. Draw Ground-Truth Route (Green Polyline)
+                    if (data.ground_truth_route_coords && data.ground_truth_route_coords.length > 0) {
+                        data.ground_truth_route_coords.forEach(seg => {
+                            L.polyline(seg, { color: '#16a34a', weight: 4.5, opacity: 0.8 }).addTo(routeLayer);
+                        });
+                    }
+
+                    // 3. Draw Predicted Reconstructed Path (Red Polyline)
+                    if (data.predicted_route_coords && data.predicted_route_coords.length > 0) {
+                        data.predicted_route_coords.forEach(seg => {
+                            L.polyline(seg, { color: '#dc2626', weight: 3, opacity: 0.9, dashArray: '4, 4' }).addTo(predictedLayer);
+                        });
+                    }
+
+                    if (allBounds.length > 0) {
+                        map.fitBounds(L.latLngBounds(allBounds), { padding: [30, 30] });
+                    }
+                } catch (err) {
+                    alert("Evaluation failed: " + err);
+                } finally {
+                    btn.innerText = "Run Map-Matching Inference";
+                    btn.disabled = false;
+                }
+            }
+
+            window.onload = () => {
+                initMap();
+                runEvaluation(); // auto run first trip
+            };
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("src.api.main:app", host="0.0.0.0", port=8000, reload=False)

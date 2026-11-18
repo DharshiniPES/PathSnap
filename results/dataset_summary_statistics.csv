@@ -1,0 +1,5 @@
+,trip_id,gps_points,gps_points,gps_points,gps_points,gps_points,duration_seconds,duration_seconds,duration_seconds,trajectory_length_km,trajectory_length_km,trajectory_length_km,avg_speed_kmh,avg_speed_kmh,avg_speed_kmh,road_nodes,road_nodes,road_nodes,road_arcs,road_arcs,road_arcs,route_arcs,route_arcs,route_arcs
+,count,sum,mean,min,max,median,mean,min,max,mean,min,max,mean,min,max,mean,min,max,mean,min,max,mean,min,max
+partition,,,,,,,,,,,,,,,,,,,,,,,,
+Student-Testing,10,19160,1916.0,262,3958,1420.0,2025.0,265.0,4000.0,29.74,5.55,71.8,55.87,33.45,78.38,9068.9,1770,26635,18504.1,3577,56027,347.7,95,1323
+Training,80,208417,2605.21,361,19313,1529.0,5680.4,451.0,154030.0,37.27,6.34,169.34,54.71,23.57,139.46,24168.56,299,155003,48461.3,649,307392,391.7,59,2266
