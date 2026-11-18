@@ -173,7 +173,7 @@ def run_eda(data_root: str, output_viz_dir: str, output_res_dir: str):
     center_lat = float(np.mean(track[:, 1]))
     center_lon = float(np.mean(track[:, 0]))
 
-    fmap = folium.Map(location=[center_lat, center_lon], zoom_start=15, tiles="OpenStreetMap")
+    fmap = folium.Map(location=[center_lat, center_lon], zoom_start=15, tiles="CartoDB positron")
 
     # Layer 1: Road network edges (subsampled for quick rendering if dense)
     network_group = folium.FeatureGroup(name="Road Network Segments (Grey)", show=True)
