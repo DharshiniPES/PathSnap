@@ -1,17 +1,3 @@
-"""
-Model experimentation and comparison module for PathSnap.
-PES University UE24CS352A: Machine Learning
-Trains and evaluates 5 distinct models across different algorithm families:
-1. Logistic Regression (Linear & Probabilistic)
-2. K-Nearest Neighbors (Instance-Based)
-3. Random Forest (Ensemble / Bagging)
-4. XGBoost (Gradient Boosting)
-5. Multi-Layer Perceptron (Neural Networks)
-
-Computes Group-aware 5-fold CV, Student-Testing Top-1 Accuracy, Macro F1,
-Log Loss, Route Continuity, and Inference Latency.
-"""
-
 import os
 import sys
 import time
