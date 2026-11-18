@@ -53,8 +53,8 @@ class PathSnapEngine:
     def run_inference(
         self,
         trip_id: str,
-        partition: str = "student_test",
-        model_name: str = "xgboost",
+        partition: str = "evaluator_test",
+        model_name: str = "xgboost_tuned",
         use_hmm: bool = True
     ) -> Dict[str, Any]:
         """
@@ -66,9 +66,23 @@ class PathSnapEngine:
         5. Computes server-side accuracy and route continuity against ground truth.
         """
         t0 = time.time()
-        trip_dir = os.path.join(self.data_dir, partition, trip_id)
-        if not os.path.exists(trip_dir):
-            raise FileNotFoundError(f"Trip directory not found: {trip_dir}")
+        
+        # Auto-detect partition if not strictly existing in requested partition
+        candidate_partitions = [partition, "evaluator_test", "student_test", "train"]
+        found_dir = None
+        actual_partition = partition
+        for p in candidate_partitions:
+            p_path = os.path.join(self.data_dir, p, trip_id)
+            if os.path.exists(p_path):
+                found_dir = p_path
+                actual_partition = p
+                break
+
+        if found_dir is None:
+            raise FileNotFoundError(f"Trip directory not found for trip_id {trip_id} in partitions {candidate_partitions}")
+
+        trip_dir = found_dir
+        partition = actual_partition
 
         # 1. Load trip data
         trip = load_trip(trip_dir, trip_id)
